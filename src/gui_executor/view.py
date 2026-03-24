@@ -1472,7 +1472,7 @@ class View(QMainWindow):
         print("Waiting for recurring tasks to end.", end="", flush=True)
         while not self.threadpool.waitForDone(100):
             print(".", end="", flush=True)
-        print(flush=True)
+        print("\nDone.", flush=True)
 
     def start_recurring_task(self, task: Callable):
         # Pass the function to execute
