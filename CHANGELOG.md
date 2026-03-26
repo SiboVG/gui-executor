@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-03-26
+
+- Added QCheckBox support for boolean Callback return values. The CallbackWidget always rendered a QLineEdit for boolean callbacks, making it impossible to set False (bool of any non-empty string is True).
+
 ## [0.22.0] - 2026-03-14
 
 - Upgrade API and messages for Jupyter client and server. The following changes have been implemented to handle the latest version of the protocol 5.5, that was shipped with jupyter-client 8.8.0:
