@@ -16,5 +16,5 @@
 * Create a pull request and merge the pull request
 * Push the tags to upstream
   ```
-  $ git push --tags push-tags
+  $ git push upstream v#.#.#
   ```
