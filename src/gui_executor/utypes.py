@@ -108,7 +108,10 @@ class CallbackWidget(UQWidget):
 
         self.func_rc = func()
 
-        if isinstance(self.func_rc, (list, tuple)):
+        if isinstance(self.func_rc, bool):
+            self.widget = QCheckBox()
+            self.widget.setCheckState(Qt.Checked if self.func_rc else Qt.Unchecked)
+        elif isinstance(self.func_rc, (list, tuple)):
             self.widget: QComboBox = combo_box_from_list(self.func_rc)
             if default_func is not None:
                 self.widget.setCurrentText(str(default_func()))
@@ -126,13 +129,15 @@ class CallbackWidget(UQWidget):
         self.setLayout(hbox)
 
     def get_value(self):
-        if not isinstance(self.widget, QComboBox):
-            return self.widget.displayText() or self.widget.placeholderText()
-
-        if isinstance(self.func_rc, (list, tuple)):
-            return self.func_rc[self.widget.currentIndex()]
+        if isinstance(self.widget, QCheckBox):
+            return self.widget.checkState() == Qt.Checked
+        elif isinstance(self.widget, QComboBox):
+            if isinstance(self.func_rc, (list, tuple)):
+                return self.func_rc[self.widget.currentIndex()]
+            else:
+                return self.func_rc[self.widget.currentText()]
         else:
-            return self.func_rc[self.widget.currentText()]
+            return self.widget.displayText() or self.widget.placeholderText()
 
 
 class VariableName(TypeObject):
