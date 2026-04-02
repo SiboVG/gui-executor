@@ -64,16 +64,21 @@ class MyClient:
         """Wait for kernel to be ready."""
         msg_id = self._client.kernel_info()
 
-        start = time.time()
+        if VERBOSE_DEBUG:
+            LOGGER.debug(f"{id(self)}: Waiting for kernel to be ready with msg_id {msg_id}...")
+
+        start = time.monotonic()
         while True:
             try:
-                msg = self._client.get_shell_msg(timeout=1.0)
+                msg = self._client.get_shell_msg(timeout=0.2)
+                if VERBOSE_DEBUG:
+                    LOGGER.debug(f"{id(self)}: Received message while waiting for kernel to be ready: {msg}")
                 if msg["msg_type"] == "kernel_info_reply" and msg["parent_header"].get("msg_id") == msg_id:
                     return True
             except queue.Empty:
                 pass
 
-            if time.time() - start > timeout:
+            if time.monotonic() - start > timeout:
                 raise TimeoutError("Kernel did not become ready within the specified timeout.")
 
     def stop_channels(self):
@@ -85,7 +90,7 @@ class MyClient:
         if VERBOSE_DEBUG:
             LOGGER.debug(f"{id(self)}: {msg_id = }")
 
-        shell_msg = self._client.get_shell_msg()
+        shell_msg = self._client.get_shell_msg(timeout=self._timeout)
         if VERBOSE_DEBUG:
             LOGGER.debug(f"{id(self)}: {shell_msg = }")
 
@@ -136,12 +141,16 @@ class MyClient:
         # fetch the output
 
         output: List[str] = []
+        reply = None
+        saw_idle = False
+        reply_received_at = None
 
         while True:
             try:
                 io_msg = self._client.get_iopub_msg(timeout=self._timeout)
                 io_msg_type = io_msg["msg_type"]
                 io_msg_content = io_msg["content"]
+                io_parent_msg_id = io_msg.get("parent_header", {}).get("msg_id")
 
                 if VERBOSE_DEBUG:
                     LOGGER.debug(f"{id(self)}: io_msg = {io_msg}")
@@ -150,12 +159,14 @@ class MyClient:
                 if VERBOSE_DEBUG:
                     LOGGER.debug(f"{id(self)}: io_msg_content = {io_msg_content}")
 
+                if io_msg_type != "iopub_welcome" and io_parent_msg_id != msg_id:
+                    continue
+
                 if io_msg_type == "status":
                     if io_msg_content["execution_state"] == "idle":
-                        # self.signals.data.emit("Execution State is Idle, terminating...")
+                        saw_idle = True
                         if VERBOSE_DEBUG:
                             LOGGER.debug(f"{id(self)}: Execution State is Idle, terminating...")
-                        break
                 elif io_msg_type == "stream":
                     if "text" in io_msg_content:
                         text = io_msg_content["text"].rstrip()
@@ -167,21 +178,42 @@ class MyClient:
                 elif io_msg_type == "error":
                     ...  # ignore this message type
                 elif io_msg_type == "execute_result":
-                    ...  # ignore this message type
+                    data = io_msg_content.get("data", {})
+                    text = data.get("text/plain")
+                    if text is not None:
+                        output.append(str(text).rstrip())
                 elif io_msg_type == "iopub_welcome":
                     ...  # ignore this message type
                 else:
                     LOGGER.warning(f"{id(self)}: Unknown io_msg_type: {io_msg_type}")
             except queue.Empty:
-                LOGGER.warning(f"{id(self)}: IOPub timed out waiting for idle — exiting loop")
+                if VERBOSE_DEBUG:
+                    LOGGER.debug(f"{id(self)}: IOPub timed out while waiting for execution to complete; continuing")
+
+            try:
+                shell_msg = self._client.get_shell_msg(timeout=0.05)
+                if shell_msg["msg_type"] == "execute_reply" and shell_msg["parent_header"].get("msg_id") == msg_id:
+                    reply = shell_msg
+                    if reply_received_at is None:
+                        reply_received_at = time.monotonic()
+            except queue.Empty:
+                pass
+
+            if reply is not None and saw_idle:
                 break
+
+            # In rare cases, idle can be delayed or dropped; once we have the matching
+            # execute_reply, don't block forever waiting for idle.
+            if reply is not None and reply_received_at is not None:
+                if time.monotonic() - reply_received_at > self._timeout:
+                    LOGGER.warning(f"{id(self)}: Execute reply received but no idle status observed; proceeding")
+                    break
 
         if VERBOSE_DEBUG:
             LOGGER.debug(f"{id(self)}: {output = }")
 
-        # fetch the reply message
-
-        reply = self._client.get_shell_msg(timeout=1.0)
+        if reply is None:
+            raise TimeoutError("Did not receive execute_reply for the submitted snippet.")
 
         if VERBOSE_DEBUG:
             LOGGER.debug(f"{id(self)}: {type(reply) = }")

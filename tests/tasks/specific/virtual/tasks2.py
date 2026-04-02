@@ -2,8 +2,8 @@ from gui_executor.utils import copy_func
 
 # Import all the tasks that you want to gather in this TAB
 
-from tasks.specific.first_tab.sys_path import print_sys_version
-from tasks.specific.first_tab.sys_path import print_sys_path
+from tasks.specific.sys_func.sys_path import print_sys_version
+from tasks.specific.sys_func.sys_path import print_sys_path
 from tasks.specific.second_tab.print_this import print_this
 from tasks.specific.third_tab.second_row import print_args
 
