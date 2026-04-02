@@ -373,112 +373,112 @@ class FunctionRunnableKernel(FunctionRunnable):
 
     def run(self):
         self.running = True
+        success = False
+        client = None
 
-        self.signals.data.emit(f"----- Running script '{self.func_name}' in kernel")
-
-        snippet = create_code_snippet(self._func, self._args, self._kwargs)
-
-        self.signals.data.emit("The code snippet:")
-        self.signals.data.emit(create_code_snippet_renderable(self._func, self._args, self._kwargs))
-        self.signals.data.emit("")
-
-        client = MyClient(self.kernel, startup_timeout=self.startup_timeout)
         try:
+            self.signals.data.emit(f"----- Running script '{self.func_name}' in kernel")
+
+            snippet = create_code_snippet(self._func, self._args, self._kwargs)
+
+            self.signals.data.emit("The code snippet:")
+            self.signals.data.emit(create_code_snippet_renderable(self._func, self._args, self._kwargs))
+            self.signals.data.emit("")
+
+            client = MyClient(self.kernel, startup_timeout=self.startup_timeout)
             client.connect()
+
+            msg_id = client.execute(snippet, allow_stdin=True)
+
+            if VERBOSE_DEBUG:
+                LOGGER.debug(f"{id(client)}: {msg_id = }")
+
+            while True:
+                try:
+                    io_msg = client.get_iopub_msg(timeout=1.0)
+
+                    if io_msg["parent_header"].get("msg_id") != msg_id:
+                        if VERBOSE_DEBUG:
+                            LOGGER.debug(f"{id(client)}: Skipping {io_msg = }")
+                        continue
+
+                    io_msg_type = io_msg["msg_type"]
+                    io_msg_content = io_msg["content"]
+
+                    if VERBOSE_DEBUG:
+                        LOGGER.debug(f"{id(client)}: {io_msg = }")
+
+                    if io_msg_type == "stream":
+                        if "text" in io_msg_content:
+                            text = io_msg_content["text"].rstrip()
+                            self.signals.data.emit(text)
+                    elif io_msg_type == "status":
+                        if io_msg_content["execution_state"] == "idle":
+                            if VERBOSE_DEBUG:
+                                LOGGER.debug(f"{id(client)}: Execution State is Idle, terminating...")
+                            self.collect_response_payload(client, msg_id, timeout=1.0)
+                            break
+                        elif io_msg_content["execution_state"] == "busy":
+                            if VERBOSE_DEBUG:
+                                LOGGER.debug(f"{id(client)}: Execution State is busy...")
+                            continue
+                        elif io_msg_content["execution_state"] == "starting":
+                            if VERBOSE_DEBUG:
+                                LOGGER.debug(f"{id(client)}: Execution State is starting...")
+                            continue
+                    elif io_msg_type == "display_data":
+                        if "data" in io_msg_content:
+                            if VERBOSE_DEBUG:
+                                LOGGER.debug(f"{id(client)}: display data of type {io_msg_content['data'].keys()}")
+                            if "text/html" in io_msg_content["data"]:
+                                text = io_msg_content["data"]["text/html"].rstrip()
+                                self.signals.html.emit(text)
+                            elif "image/png" in io_msg_content["data"]:
+                                data = io_msg_content["data"]["image/png"]
+                                self.signals.png.emit(data)
+                            elif "text/plain" in io_msg_content["data"]:
+                                text = io_msg_content["data"]["text/plain"].rstrip()
+                                self.signals.data.emit(text)
+                    elif io_msg_type == "execute_input":
+                        ...  # ignore this message type
+                    elif io_msg_type == "error":
+                        if "traceback" in io_msg_content:
+                            traceback = io_msg_content["traceback"]
+                            self.signals.data.emit(Text.from_ansi("\n".join(traceback)))
+                    else:
+                        self.signals.error.emit(RuntimeError(f"Unknown io_msg_type: {io_msg_type}"))
+
+                except queue.Empty:
+                    if VERBOSE_DEBUG:
+                        LOGGER.debug(f"{id(client)}: Catching on empty queue -----------")
+                    # We fall through here when no output is received from the kernel. This can mean that the kernel
+                    # is waiting for input and therefore this is a good opportunity to check for stdin messages.
+                    with contextlib.suppress(queue.Empty):
+                        in_msg = client.get_stdin_msg(timeout=0.1)
+
+                        if VERBOSE_DEBUG:
+                            LOGGER.debug(f"{id(client)}: {in_msg = }")
+
+                        if in_msg["msg_type"] == "input_request":
+                            prompt = in_msg["content"]["prompt"]
+                            response = self.handle_input_request(prompt)
+                            client.input(response)
+                except Exception as exc:
+                    LOGGER.error(f"{id(client)}: Caught Exception: {exc}", exc_info=True)
+                    self.signals.data.emit(exc)
+
+            success = True
+
         except RuntimeError as exc:
             self.signals.error.emit(exc)
-            return
+            success = False
+        finally:
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    client.disconnect()
 
-        msg_id = client.execute(snippet, allow_stdin=True)
-
-        if VERBOSE_DEBUG:
-            LOGGER.debug(f"{id(client)}: {msg_id = }")
-
-        while True:
-            try:
-                io_msg = client.get_iopub_msg(timeout=1.0)
-
-                if io_msg["parent_header"].get("msg_id") != msg_id:
-                    if VERBOSE_DEBUG:
-                        LOGGER.debug(f"{id(client)}: Skipping {io_msg = }")
-                    continue
-
-                io_msg_type = io_msg["msg_type"]
-                io_msg_content = io_msg["content"]
-
-                if VERBOSE_DEBUG:
-                    LOGGER.debug(f"{id(client)}: {io_msg = }")
-
-                if io_msg_type == "stream":
-                    if "text" in io_msg_content:
-                        text = io_msg_content["text"].rstrip()
-                        self.signals.data.emit(text)
-                elif io_msg_type == "status":
-                    if io_msg_content["execution_state"] == "idle":
-                        # self.signals.data.emit("Execution State is Idle, terminating...")
-                        if VERBOSE_DEBUG:
-                            LOGGER.debug(f"{id(client)}: Execution State is Idle, terminating...")
-                        self.collect_response_payload(client, msg_id, timeout=1.0)
-                        break
-                    elif io_msg_content["execution_state"] == "busy":
-                        # self.signals.data.emit("Execution State is busy...")
-                        if VERBOSE_DEBUG:
-                            LOGGER.debug(f"{id(client)}: Execution State is busy...")
-                        continue
-                    elif io_msg_content["execution_state"] == "starting":
-                        # self.signals.data.emit("Execution State is starting...")
-                        if VERBOSE_DEBUG:
-                            LOGGER.debug(f"{id(client)}: Execution State is starting...")
-                        continue
-                elif io_msg_type == "display_data":
-                    if "data" in io_msg_content:
-                        if VERBOSE_DEBUG:
-                            LOGGER.debug(f"{id(client)}: display data of type {io_msg_content['data'].keys()}")
-                        if "text/html" in io_msg_content["data"]:
-                            text = io_msg_content["data"]["text/html"].rstrip()
-                            self.signals.html.emit(text)
-                        elif "image/png" in io_msg_content["data"]:
-                            data = io_msg_content["data"]["image/png"]
-                            self.signals.png.emit(data)
-                        elif "text/plain" in io_msg_content["data"]:
-                            text = io_msg_content["data"]["text/plain"].rstrip()
-                            self.signals.data.emit(text)
-                elif io_msg_type == "execute_input":
-                    ...  # ignore this message type
-                    #     self.signals.data.emit("The code snippet:")
-                    #     source_code = io_msg_content['code']
-                    #     syntax = Syntax(source_code, "python", theme='default')
-                    #     self.signals.data.emit(syntax)
-                elif io_msg_type == "error":
-                    if "traceback" in io_msg_content:
-                        traceback = io_msg_content["traceback"]
-                        self.signals.data.emit(Text.from_ansi("\n".join(traceback)))
-                else:
-                    self.signals.error.emit(RuntimeError(f"Unknown io_msg_type: {io_msg_type}"))
-
-            except queue.Empty:
-                if VERBOSE_DEBUG:
-                    LOGGER.debug(f"{id(client)}: Catching on empty queue -----------")
-                # We fall through here when no output is received from the kernel. This can mean that the kernel
-                # is waiting for input and therefore this is a good opportunity to check for stdin messages.
-                with contextlib.suppress(queue.Empty):
-                    in_msg = client.get_stdin_msg(timeout=0.1)
-
-                    if VERBOSE_DEBUG:
-                        LOGGER.debug(f"{id(client)}: {in_msg = }")
-
-                    if in_msg["msg_type"] == "input_request":
-                        prompt = in_msg["content"]["prompt"]
-                        response = self.handle_input_request(prompt)
-                        client.input(response)
-            except Exception as exc:
-                # We come here after a kernel interrupt that leads to incomplete
-                LOGGER.error(f"{id(client)}: Caught Exception: {exc}", exc_info=True)
-                self.signals.data.emit(exc)
-
-        client.disconnect()
-        self.running = False
-        self.signals.finished.emit(self, self.func_name, True)
+            self.running = False
+            self.signals.finished.emit(self, self.func_name, success)
 
     def handle_input_request(self, prompt: str = None) -> str:
         """
@@ -498,7 +498,7 @@ class FunctionRunnableKernel(FunctionRunnable):
                         [red][bold]ERROR: [/]The input request prompt message doesn't match any of the expected prompt messages.[/]
                         [default]→ input prompt='{escape(prompt)}'[/]
                         [default]→ expected=({", ".join(f"'{escape(x)}'" for x in self._input_patterns)})[/]
-                        
+
                         [blue]Ask the developer of the task to match up the input request patterns and the prompt.[/]
                         """
                     )
@@ -516,9 +516,9 @@ class FunctionRunnableKernel(FunctionRunnable):
                 textwrap.dedent(
                     f"""\
                     [red][bold]ERROR: [/]No prompt was given to the input request function.[/]
-                    An input request was detected from the Jupyter kernel, but no message was given to describe the 
+                    An input request was detected from the Jupyter kernel, but no message was given to describe the
                     request. Ask the developer of the task to pass a proper message to the input request.
-                    
+
                     [blue]An empty string will be returned to the kernel.[/]
                     """
                 )
@@ -792,9 +792,9 @@ class DynamicButton(QWidget):
             label_text.setStyleSheet(
                 textwrap.dedent(
                     """\
-                    padding: 0px; 
+                    padding: 0px;
                     border-bottom-width: 0px;  /* set to 1 or 2 if you need a bottom line */
-                    border-bottom-style: solid; 
+                    border-bottom-style: solid;
                     border-bottom-color: blue;
                     border-radius: 0px;
                     color: cornflowerblue;
@@ -1302,6 +1302,7 @@ class View(QMainWindow):
 
         self._gui_apps = []
         self._recurring_tasks = []
+        self._kernel_runnable_in_progress = False
 
         self.setWindowTitle(app_name or "GUI Executor")
 
@@ -1533,7 +1534,7 @@ class View(QMainWindow):
             client.run_snippet(
                 textwrap.dedent(
                     """\
-                def quit(keep_kernel=True): 
+                def quit(keep_kernel=True):
                     import IPython as ip
                     ip = ip.get_ipython()
                     ip.keepkernel_on_exit = keep_kernel
@@ -1550,7 +1551,7 @@ class View(QMainWindow):
                     textwrap.dedent("""\
                         import os
                         import runpy
-                        
+
                         try:
                             startup = os.environ["PYTHONSTARTUP"]
                             runpy.run_path(path_name=startup)
@@ -1595,6 +1596,14 @@ class View(QMainWindow):
     def run_function(self, func: Callable, args: List, kwargs: Dict, runnable_type: int):
         # TODO:
         #  * disable run button (should be activate again in function_complete?)
+        if runnable_type == RUNNABLE_KERNEL:
+            if self._kernel_runnable_in_progress:
+                self._console_panel.append(
+                    "[yellow]Kernel is busy running another function. Please wait until it is finished.[/]"
+                )
+                return
+            self._kernel = self._kernel or MyKernel()
+            self._kernel_runnable_in_progress = True
 
         runnable = {
             RUNNABLE_KERNEL: partial(FunctionRunnableKernel, self._kernel),
@@ -1602,9 +1611,15 @@ class View(QMainWindow):
             RUNNABLE_SCRIPT: FunctionRunnableExternalCommand,
         }
 
-        worker = runnable[runnable_type](func, args, kwargs, self.input_queue)
+        try:
+            worker = runnable[runnable_type](func, args, kwargs, self.input_queue)
+        except Exception as exc:
+            if runnable_type == RUNNABLE_KERNEL:
+                self._kernel_runnable_in_progress = False
+            self.function_error(exc)
+            return
+
         worker.check_for_input(func.__ui_input_request__)
-        worker.start()
 
         worker.signals.data.connect(self.function_output)
         worker.signals.html.connect(self.function_output_html)
@@ -1616,6 +1631,16 @@ class View(QMainWindow):
         if VERBOSE_DEBUG:
             self._console_panel.append(f"[blue]Added '{worker.func_name}' to list of runnable threads.[/blue]")
         self._gui_apps.append(worker)
+
+        try:
+            worker.start()
+        except Exception as exc:
+            with contextlib.suppress(ValueError):
+                self._gui_apps.remove(worker)
+            if runnable_type == RUNNABLE_KERNEL:
+                self._kernel_runnable_in_progress = False
+            self.function_error(exc)
+            return
 
     def run_function_in_kernel(self, func: Callable, args: List, kwargs: Dict):
         self._kernel = self._kernel or MyKernel()
@@ -1836,6 +1861,8 @@ class View(QMainWindow):
 
     @pyqtSlot(object, str, bool)
     def function_complete(self, runnable: FunctionRunnable, name: str, success: bool):
+        if isinstance(runnable, FunctionRunnableKernel):
+            self._kernel_runnable_in_progress = False
         if success:
             self._console_panel.append(f"----- function '{name}' execution finished.")
         else:
