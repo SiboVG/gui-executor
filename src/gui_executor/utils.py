@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import binascii
 import contextlib
+from dataclasses import dataclass
 import datetime
 import functools
-import importlib
 import inspect
 import logging
 import os
@@ -16,15 +16,10 @@ import types
 from enum import Enum
 from io import StringIO
 from pathlib import Path
-from typing import Any
-from typing import Callable
-from typing import Dict
-from typing import List
-from typing import Tuple
+from typing import Any, Callable, Dict, List, Tuple, Type
 
 import rich
-from PyQt5.QtWidgets import QComboBox
-from PyQt5.QtWidgets import QFileDialog
+from PyQt5.QtWidgets import QComboBox, QFileDialog
 from rich import box
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -41,7 +36,7 @@ def bool_env(var_name: str, default: bool = False) -> bool:
     return default
 
 
-def replace_environment_variable(input_string: str) -> str:
+def replace_environment_variable(input_string: str) -> str | None:
     """Returns the `input_string` with all occurrences of ENV['var'] expanded.
 
     >>> replace_environment_variable("ENV['HOME']/data/CSL")
@@ -87,9 +82,15 @@ def expand_path(path: Path | str) -> Path:
 
     Returns:
         An absolute path.
+
+    Raises:
+        ValueError: when the path contains an environment variable that is not found.
     """
-    path = replace_environment_variable(str(path))
-    path = Path(path).expanduser()
+    path_or_env = replace_environment_variable(str(path))
+    if path_or_env is None:
+        raise ValueError(f"Environment variable not found for path: {str(path)}")
+
+    path = Path(path_or_env).expanduser()
 
     return path.resolve()
 
@@ -134,25 +135,25 @@ def copy_func(func, module_display_name=None, function_display_name=None):
         func.__closure__,
     )
 
-    new_func.__wrapped__ = func.__wrapped__
+    new_func.__wrapped__ = func.__wrapped__  # type: ignore
 
     for ui_attr in func.__dict__:
         if ui_attr.startswith("__ui"):
             setattr(new_func, ui_attr, getattr(func, ui_attr))
 
     if module_display_name:
-        new_func.__ui_module_display_name__ = module_display_name
+        new_func.__ui_module_display_name__ = module_display_name  # type: ignore
 
     if function_display_name:
-        new_func.__ui_display_name__ = function_display_name
+        new_func.__ui_display_name__ = function_display_name  # type: ignore
 
     # Update the lineno of the function source, this shall be the lineno where the copy_func() is called.
     # This will overwrite the lineno of the original function as set by for wrapper
 
-    caller = inspect.currentframe().f_back
+    caller = inspect.currentframe().f_back  # type: ignore
     # module_name = inspect.getmodule(caller).__name__
     # print(f"{module_name} {func.__name__ = } {caller.f_lineno = }")
-    new_func.__ui_lineno__ = caller.f_lineno
+    new_func.__ui_lineno__ = caller.f_lineno  # type: ignore
 
     return new_func
 
@@ -202,16 +203,17 @@ def replace_required_args(code: List | str, args: List) -> List | str:
             for match in matches:
                 print(f"{match = }")
                 name, expected_type = match.split(":") if ":" in match else (match, None)
-                line = line.replace(f"<<{match}>>", f"****")
+                line = line.replace(f"<<{match}>>", "****")
         new_code_lines.append(line)
     return new_code_lines
 
 
 def var_exists(var_name: str):
     frame = inspect.currentframe()
+    assert frame is not None  # this should never happen, but mypy doesn't know that
 
     try:
-        return var_name in frame.f_back.f_locals or var_name in frame.f_back.f_globals
+        return var_name in frame.f_back.f_locals or var_name in frame.f_back.f_globals  # type: ignore
     finally:
         del frame
 
@@ -228,8 +230,10 @@ def sys_path(path: Path | str):
         sys.path.pop(0)
 
 
-class Data(object):
-    pass
+@dataclass
+class Data:
+    stdout: str = ""
+    stderr: str = ""
 
 
 @contextlib.contextmanager
@@ -257,9 +261,12 @@ def custom_repr(arg: Any):
     if not isinstance(arg, Enum):
         return repr(arg)
 
-    m = re.fullmatch(r"<([\w.]+): (.*)>", repr(arg))
+    match = re.fullmatch(r"<([\w.]+): (.*)>", repr(arg))
 
-    return m[1]
+    if match is None:
+        raise ValueError(f"Unexpected repr format for Enum: {repr(arg)}")
+
+    return match[1]
 
 
 def stringify_args(args):
@@ -300,8 +307,8 @@ def extract_var_name_args_and_kwargs(ui_args: dict):
         Positional arguments are returned in a list, keyword arguments are returned in a dictionary.
 
     """
-    from gui_executor.utypes import VariableName
     from gui_executor.exec import ArgumentKind
+    from gui_executor.utypes import VariableName
 
     args = [
         v.annotation.get_value()
@@ -335,13 +342,13 @@ def create_code_snippet(func: Callable, args: List, kwargs: Dict, call_func: boo
             {stringify_imports(args, kwargs)}
             error = False
             {stringify_var_name_checks(args, kwargs)}
-            
+
             def main():
                 response = {func.__name__}({stringify_args(args)}{", " if args else ""}{stringify_kwargs(kwargs)})  # [3405691582]
                 if response is not None:
                     print(response)
                 return response
-            
+
             if not error:
                 {f"{func.__ui_capture_response__} = main()" if call_func else "pass"}
         """
@@ -351,12 +358,12 @@ def create_code_snippet(func: Callable, args: List, kwargs: Dict, call_func: boo
 
 
 def create_code_snippet_renderable(func: Callable, args: List, kwargs: Dict):
-    snippet = f"{func.__ui_capture_response__} = {func.__name__}({stringify_args(args)}{', ' if args else ''}{stringify_kwargs(kwargs)})"
+    snippet = f"{func.__ui_capture_response__} = {func.__name__}({stringify_args(args)}{', ' if args else ''}{stringify_kwargs(kwargs)})"  # type: ignore
 
     return Panel(Syntax(snippet, "python", theme="default", word_wrap=True), box=box.HORIZONTALS)
 
 
-def select_directory(directory: str = None) -> str:
+def select_directory(directory: str | None = None) -> str:
     dialog = QFileDialog()
     dialog.setOption(QFileDialog.ShowDirsOnly, True)
     dialog.setOption(QFileDialog.ReadOnly, True)
@@ -371,7 +378,7 @@ def select_directory(directory: str = None) -> str:
     return filenames[0] if filenames is not None else ""
 
 
-def select_file(filename: str = None, full_path: bool = True) -> str:
+def select_file(filename: str | None = None, full_path: bool = True) -> str:
     dialog = QFileDialog()
     dialog.setDirectory(filename)
     dialog.setOption(QFileDialog.ReadOnly, True)
@@ -384,7 +391,7 @@ def select_file(filename: str = None, full_path: bool = True) -> str:
     return filenames[0] if filenames is not None else ""
 
 
-def combo_box_from_enum(enumeration: Enum) -> QComboBox:
+def combo_box_from_enum(enumeration: Type[Enum]) -> QComboBox:
     cb = QComboBox()
     cb.addItems([x.name for x in enumeration])
     return cb
@@ -517,7 +524,7 @@ def b64decode(s, altchars=None, validate=False):
 
 def print_system_info():
     import sys
-    import rich
+
     import distro
 
     rich.print(f"distro: {distro.name()}, {distro.version(pretty=True)}")
@@ -650,3 +657,24 @@ def timer(*, precision: int = 4):
         return wrapper_timer
 
     return actual_decorator
+
+
+def borg(cls):
+    """
+    Use the Borg pattern to make a class with a shared state between its instances and subclasses.
+
+    from:
+        [we don't need no singleton](
+        http://code.activestate.com/recipes/66531-singleton-we-dont-need-no-stinkin-singleton-the-bo/)
+    """
+
+    cls._shared_state = {}
+    orig_init = cls.__init__
+
+    def new_init(self, *args, **kwargs):
+        self.__dict__ = cls._shared_state
+        orig_init(self, *args, **kwargs)
+
+    cls.__init__ = new_init
+
+    return cls
